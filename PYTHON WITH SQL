@@ -1,0 +1,54 @@
+from flask import Flask, request, jsonify, render_template
+from flask_sqlalchemy import SQLAlchemy
+import datetime
+
+app = Flask(__name__)
+
+# Database setup
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///sensor_data.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+# Database Model
+class SensorData(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    temperature = db.Column(db.Float, nullable=False)
+    latitude = db.Column(db.Float, nullable=False)
+    longitude = db.Column(db.Float, nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+# Create the database
+with app.app_context():
+    db.create_all()
+
+# Route to receive data from Arduino
+@app.route('/update', methods=['GET'])
+def update():
+    try:
+        temp = float(request.args.get('temp'))
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+
+        data = SensorData(temperature=temp, latitude=lat, longitude=lon)
+        db.session.add(data)
+        db.session.commit()
+
+        return jsonify({"status": "success", "message": "Data stored successfully"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+# Route to get the latest data
+@app.route('/latest', methods=['GET'])
+def latest():
+    data = SensorData.query.order_by(SensorData.id.desc()).first()
+    if data:
+        return jsonify({"temperature": data.temperature, "latitude": data.latitude, "longitude": data.longitude})
+    return jsonify({"message": "No data available"}), 404
+
+# Serve the webpage
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0')
