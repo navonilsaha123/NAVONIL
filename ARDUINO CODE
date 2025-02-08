@@ -1,0 +1,183 @@
+#include <Wire.h>
+#include <SoftwareSerial.h>
+#include <ESP8266WiFi.h>
+#include "MAX30105.h"
+#include "heartRate.h"
+#include "MPU9250.h"
+
+#define rxPin 2
+#define txPin 3
+SoftwareSerial sim800(rxPin, txPin);
+
+// Emergency phone number
+const String EMERGENCY_PHONE = "+919142108500";
+
+// Buzzer and switch
+#define BUZZER 12
+#define SWITCH_PIN 11
+
+MPU9250 mpu;
+MAX30105 particleSensor;
+
+// Impact detection variables
+byte updateflag;
+int magnitude = 0;
+int sensitivity = 30;
+boolean impact_detected = false;
+unsigned long time1;
+unsigned long impact_time;
+unsigned long alert_delay = 30000;
+
+// Fixed location
+const double FIXED_LATITUDE = 22.565571;
+const double FIXED_LONGITUDE = 88.370209;
+
+// Wi-Fi credentials
+const char* ssid = "your_SSID";
+const char* password = "your_PASSWORD";
+
+void setup() {
+    Serial.begin(115200);
+    sim800.begin(9600);
+    
+    pinMode(BUZZER, OUTPUT);
+    pinMode(SWITCH_PIN, INPUT_PULLUP);
+    
+    Wire.begin();
+    if (!mpu.setup(0x68)) {
+        Serial.println("MPU9250 connection failed");
+        while (1);
+    }
+    Serial.println("MPU9250 connected");
+
+    if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+        Serial.println("MAX30102 not found");
+        while (1);
+    }
+    Serial.println("MAX30102 initialized");
+    
+    sim800.println("AT");
+    delay(1000);
+    sim800.println("AT+CMGF=1");
+    delay(1000);
+    
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("Connected to WiFi");
+}
+
+void loop() {
+    if (micros() - time1 > 1999) Impact();
+
+    if (updateflag > 0) {
+        updateflag = 0;
+        Serial.println("Impact detected!");
+        Serial.print("Location: ");
+        Serial.print(FIXED_LATITUDE, 6);
+        Serial.print(", ");
+        Serial.println(FIXED_LONGITUDE, 6);
+        sendAlert(FIXED_LATITUDE, FIXED_LONGITUDE);
+        sendDataToServer(FIXED_LATITUDE, FIXED_LONGITUDE);
+        digitalWrite(BUZZER, HIGH);
+        impact_detected = true;
+        impact_time = millis();
+    }
+
+    if (impact_detected && (millis() - impact_time >= alert_delay)) {
+        digitalWrite(BUZZER, LOW);
+        makeCall();
+        impact_detected = false;
+    }
+
+    if (digitalRead(SWITCH_PIN) == LOW) {
+        delay(200);
+        digitalWrite(BUZZER, LOW);
+        impact_detected = false;
+    }
+
+    checkPulse();
+}
+
+void Impact() {
+    time1 = micros();
+    mpu.update();
+    int deltx = mpu.getAccX();
+    int delty = mpu.getAccY();
+    int deltz = mpu.getAccZ();
+
+    magnitude = sqrt(sq(deltx) + sq(delty) + sq(deltz));
+    if (magnitude >= sensitivity) {
+        updateflag = 1;
+    }
+}
+
+void makeCall() {
+    Serial.println("Making emergency call...");
+    sim800.println("ATD" + EMERGENCY_PHONE + ";");
+    delay(20000);
+    sim800.println("ATH");
+}
+
+void sendAlert(double latitude, double longitude) {
+    String message = "Impact detected! Location: " + String(latitude, 6) + ", " + String(longitude, 6);
+    Serial.println("Sending SMS alert...");
+    sim800.print("AT+CMGS=\"");
+    sim800.print(EMERGENCY_PHONE);
+    sim800.println("\"");
+    delay(100);
+    sim800.println(message);
+    delay(100);
+    sim800.write(26);
+}
+
+void sendDataToServer(double latitude, double longitude) {
+    const char* server = "http://yourserver.com/api/impact";
+    WiFiClient client;
+    if (client.connect(server, 80)) {
+        String postData = "latitude=" + String(latitude, 6) + "&longitude=" + String(longitude, 6);
+        Serial.println("Sending data to server...");
+        client.println("POST /api/impact HTTP/1.1");
+        client.println("Host: yourserver.com");
+        client.println("Content-Type: application/x-www-form-urlencoded");
+        client.print("Content-Length: ");
+        client.println(postData.length());
+        client.println();
+        client.println(postData);
+        delay(500);
+        while (client.available()) {
+            Serial.println("Server Response: " + client.readString());
+        }
+        client.stop();
+    } else {
+        Serial.println("Connection to server failed!");
+    }
+}
+
+void checkPulse() {
+    long irValue = particleSensor.getIR();
+    if (irValue < 50000) {
+        Serial.println("No finger detected");
+        return;
+    }
+    float heartRate = particleSensor.getHeartRate();
+    float spo2 = particleSensor.getSpO2();
+    Serial.print("Heart Rate: ");
+    Serial.print(heartRate);
+    Serial.print(" BPM, SpO2: ");
+    Serial.print(spo2);
+    Serial.println("%");
+    if (heartRate < 40 || heartRate > 150 || spo2 < 90) {
+        sendAlert(FIXED_LATITUDE, FIXED_LONGITUDE);
+    }
+}
+
+
+
+
+
+
+
+
